@@ -332,13 +332,13 @@ func Test_HealthcheckUnmarshalling(t *testing.T) {
 		{
 			name:          "just healthcheck command",
 			manifest:      []byte("services:\n  app:\n    healthcheck:\n      test: cat file.txt\n    image: okteto/vote:1"),
-			expected:      &HealthCheck{Test: []string{"cat", "file.txt"}, Readiness: true},
+			expected:      &HealthCheck{Test: []string{"/bin/sh", "-c", "cat file.txt"}, Readiness: true},
 			expectedError: false,
 		},
 		{
 			name:          "normal healthcheck",
 			manifest:      []byte("services:\n  app:\n    healthcheck:\n      interval: 10s\n      timeout: 10m\n      retries: 5\n      start_period: 30s\n      test: cat file.txt\n    image: okteto/vote:1"),
-			expected:      &HealthCheck{Test: []string{"cat", "file.txt"}, Interval: 10 * time.Second, Timeout: 10 * time.Minute, Retries: 5, StartPeriod: 30 * time.Second, Readiness: true},
+			expected:      &HealthCheck{Test: []string{"/bin/sh", "-c", "cat file.txt"}, Interval: 10 * time.Second, Timeout: 10 * time.Minute, Retries: 5, StartPeriod: 30 * time.Second, Readiness: true},
 			expectedError: false,
 		},
 		{
@@ -417,6 +417,66 @@ func Test_HealthcheckUnmarshalling(t *testing.T) {
 			name:          "healthcheck readiness=true liveness=true",
 			manifest:      []byte("services:\n  app:\n    healthcheck:\n      interval: 10s\n      x-okteto-readiness: true\n      x-okteto-liveness: true\n      timeout: 10m\n      retries: 5\n      start_period: 30s\n      test: curl --fail 0.0.0.0:8080\n    image: okteto/vote:1"),
 			expected:      &HealthCheck{HTTP: &HTTPHealtcheck{Path: "/", Port: 8080}, Interval: 10 * time.Second, Timeout: 10 * time.Minute, Retries: 5, StartPeriod: 30 * time.Second, Test: []string{}, Readiness: true, Liveness: true},
+			expectedError: false,
+		},
+		{
+			name: "healthcheck CMD form passes through as exec args",
+			manifest: []byte(`services:
+  app:
+    healthcheck:
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://localhost:8080/healthz"]
+    image: okteto/vote:1`),
+			expected:      &HealthCheck{Test: []string{"wget", "-qO", "/dev/null", "http://localhost:8080/healthz"}, Readiness: true},
+			expectedError: false,
+		},
+		{
+			name: "healthcheck CMD-SHELL preserves shell metacharacters via /bin/sh -c",
+			manifest: []byte(`services:
+  app:
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/ >/dev/null 2>&1 || exit 1"]
+    image: okteto/vote:1`),
+			expected:      &HealthCheck{Test: []string{"/bin/sh", "-c", "wget -qO- http://localhost:8080/ >/dev/null 2>&1 || exit 1"}, Readiness: true},
+			expectedError: false,
+		},
+		{
+			name: "healthcheck CMD-SHELL with pipe wraps in /bin/sh -c",
+			manifest: []byte(`services:
+  app:
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres | grep accepting"]
+    image: okteto/vote:1`),
+			expected:      &HealthCheck{Test: []string{"/bin/sh", "-c", "pg_isready -U postgres | grep accepting"}, Readiness: true},
+			expectedError: false,
+		},
+		{
+			name: "healthcheck CMD-SHELL with simple command still wraps in /bin/sh -c",
+			manifest: []byte(`services:
+  app:
+    healthcheck:
+      test: ["CMD-SHELL", "cat file.txt"]
+    image: okteto/vote:1`),
+			expected:      &HealthCheck{Test: []string{"/bin/sh", "-c", "cat file.txt"}, Readiness: true},
+			expectedError: false,
+		},
+		{
+			name: "healthcheck CMD-SHELL requires exactly two elements",
+			manifest: []byte(`services:
+  app:
+    healthcheck:
+      test: ["CMD-SHELL"]
+    image: okteto/vote:1`),
+			expected:      nil,
+			expectedError: true,
+		},
+		{
+			name: "healthcheck bare-string with shell features wraps in /bin/sh -c",
+			manifest: []byte(`services:
+  app:
+    healthcheck:
+      test: "wget -qO- http://localhost:8080/ >/dev/null 2>&1 || exit 1"
+    image: okteto/vote:1`),
+			expected:      &HealthCheck{Test: []string{"/bin/sh", "-c", "wget -qO- http://localhost:8080/ >/dev/null 2>&1 || exit 1"}, Readiness: true},
 			expectedError: false,
 		},
 	}
@@ -572,7 +632,7 @@ func Test_HealthcheckTestUnmarshalling(t *testing.T) {
 		{
 			name:            "CMDSHELL",
 			healthcheckTest: `["CMD-SHELL", "curl -f localhost:5000"]`,
-			expected:        []string{"curl", "-f", "localhost:5000"},
+			expected:        []string{"/bin/sh", "-c", "curl -f localhost:5000"},
 			expectedError:   false,
 		},
 		{
@@ -584,7 +644,7 @@ func Test_HealthcheckTestUnmarshalling(t *testing.T) {
 		{
 			name:            "direct",
 			healthcheckTest: `curl -f localhost:5000`,
-			expected:        []string{"curl", "-f", "localhost:5000"},
+			expected:        []string{"/bin/sh", "-c", "curl -f localhost:5000"},
 			expectedError:   false,
 		},
 		{

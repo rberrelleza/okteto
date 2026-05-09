@@ -623,6 +623,13 @@ func translateHealtcheckCurlToHTTP(healthcheck *HealthCheck) {
 	s := strings.Join(healthcheck.Test, " ")
 	testStrings := strings.Split(s, " ")
 
+	// CMD-SHELL and bare-string forms are wrapped as ["/bin/sh","-c",<script>]
+	// during unmarshal. Strip that wrap before pattern-matching for curl.
+	shellWrapLen := 3
+	if len(testStrings) >= shellWrapLen && testStrings[0] == "/bin/sh" && testStrings[1] == "-c" {
+		testStrings = testStrings[2:]
+	}
+
 	minTestStrings := 2
 	// There should be at least two strings, the curl binary and url.
 	if len(testStrings) < minTestStrings {
@@ -1250,10 +1257,10 @@ func (healthcheckTest *HealtcheckTest) UnmarshalYAML(unmarshal func(interface{})
 			if len(rawList) != healthCheckLength {
 				return fmt.Errorf("'CMD-SHELL' healtcheck.test must have exactly 2 elements")
 			}
-			*healthcheckTest, err = shellquote.Split(rawList[1])
-			if err != nil {
-				return err
-			}
+			// Compose CMD-SHELL means "run via /bin/sh -c <script>". The k8s exec
+			// probe has no shell mode, so we must inject the shell explicitly or
+			// shell metacharacters (>, |, &&, ||) get passed as literal argv.
+			*healthcheckTest = []string{"/bin/sh", "-c", rawList[1]}
 		default:
 			return fmt.Errorf("when 'healtcheck.test' is a list the first item must be either 'NONE', 'CMD' or 'CMD-SHELL'")
 		}
@@ -1265,10 +1272,8 @@ func (healthcheckTest *HealtcheckTest) UnmarshalYAML(unmarshal func(interface{})
 	if err != nil {
 		return err
 	}
-	*healthcheckTest, err = shellquote.Split(rawString)
-	if err != nil {
-		return err
-	}
+	// Compose treats the bare-string form as shorthand for CMD-SHELL.
+	*healthcheckTest = []string{"/bin/sh", "-c", rawString}
 	return nil
 }
 
