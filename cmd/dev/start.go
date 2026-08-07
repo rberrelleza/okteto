@@ -17,8 +17,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
+	"strings"
 	"time"
 
+	"github.com/okteto/okteto/pkg/config"
 	"github.com/okteto/okteto/pkg/constants"
 	oktetoErrors "github.com/okteto/okteto/pkg/errors"
 	oktetoLog "github.com/okteto/okteto/pkg/log"
@@ -36,6 +39,14 @@ const (
 
 	// failureLogLines is how many lines of session output are shown on failure
 	failureLogLines = 30
+
+	// heartbeatInterval is how often progress is reported when the state doesn't change.
+	// The deploy phase of 'okteto up' happens before the state file exists, so without
+	// a heartbeat the caller can't tell a slow start from a hang.
+	heartbeatInterval = 10 * time.Second
+
+	// maxHeartbeatLineLength is the maximum length of the log line echoed by the heartbeat
+	maxHeartbeatLineLength = 120
 )
 
 // startFlags are the flags of the 'okteto dev start' command
@@ -116,6 +127,10 @@ func runStart(env *devEnvironment, flags *startFlags, command []string, binaryNa
 		cleanupSessionFiles(env.namespace, env.name)
 	}
 
+	if len(command) == 0 && env.dev.IsInteractive() {
+		oktetoLog.Warning("The dev command for '%s' is an interactive shell, so the session will idle after start.\n    Pass the command to run your app with: okteto dev start %s -- <command>", env.name, env.name)
+	}
+
 	binary, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("failed to resolve the okteto binary path: %w", err)
@@ -176,12 +191,13 @@ func runStart(env *devEnvironment, flags *startFlags, command []string, binaryNa
 
 	oktetoLog.Information("Starting development session for '%s' in namespace '%s'...", env.name, env.namespace)
 
-	if err := waitForReady(env.namespace, env.name, exited, flags.timeout); err != nil {
+	timing, err := waitForReady(env.namespace, env.name, exited, flags.timeout)
+	if err != nil {
 		cleanupSessionFiles(env.namespace, env.name)
 		return err
 	}
 
-	oktetoLog.Success("Development session for '%s' is ready", env.name)
+	oktetoLog.Success("Development session for '%s' is ready in %s", env.name, timing)
 	printSessionSummary(env.namespace, env.name)
 	return nil
 }
@@ -214,39 +230,109 @@ func buildUpArgs(devName string, flags *startFlags, command []string) []string {
 	return args
 }
 
+// startPhases tracks when each phase of the session start was first observed, to
+// report where the time went once the session is ready
+type startPhases struct {
+	start      time.Time
+	activating time.Time // first state observed: dev-container activation began (deploy/build done)
+	syncing    time.Time // file synchronization setup began
+	ready      time.Time
+}
+
+// summary renders the total time with a per-phase breakdown, e.g.
+// "82s (deploy 35s, container 40s, sync 7s)". Phases that weren't observed are omitted.
+func (p startPhases) summary() string {
+	total := p.ready.Sub(p.start).Round(time.Second)
+	segments := []string{}
+	if !p.activating.IsZero() {
+		segments = append(segments, fmt.Sprintf("deploy %s", p.activating.Sub(p.start).Round(time.Second)))
+		syncStart := p.syncing
+		if syncStart.IsZero() {
+			syncStart = p.ready
+		}
+		segments = append(segments, fmt.Sprintf("container %s", syncStart.Sub(p.activating).Round(time.Second)))
+		if !p.syncing.IsZero() {
+			segments = append(segments, fmt.Sprintf("sync %s", p.ready.Sub(p.syncing).Round(time.Second)))
+		}
+	}
+	if len(segments) == 0 {
+		return total.String()
+	}
+	return fmt.Sprintf("%s (%s)", total, strings.Join(segments, ", "))
+}
+
 // waitForReady polls the session state until it is ready, the process exits or the
 // timeout expires. It never leaves the caller hanging: on timeout the session is
-// stopped and an error is returned.
-func waitForReady(namespace, devName string, exited chan error, timeout time.Duration) error {
+// stopped and an error is returned, and while waiting it reports progress at least
+// every heartbeatInterval. On success it returns a timing breakdown of the start.
+func waitForReady(namespace, devName string, exited chan error, timeout time.Duration) (string, error) {
 	deadline := time.Now().Add(timeout)
 	ticker := time.NewTicker(readinessPollInterval)
 	defer ticker.Stop()
 
+	phases := startPhases{start: time.Now()}
 	lastState := ""
+	lastProgressAt := time.Now()
 	for {
 		select {
 		case <-exited:
-			return sessionFailedError(namespace, devName, "the development session exited before becoming ready")
+			return "", sessionFailedError(namespace, devName, "the development session exited before becoming ready")
 		case <-ticker.C:
 			state := readUpState(namespace, devName)
 			if state != lastState && state != "" {
 				oktetoLog.Information("Session state: %s", state)
 				lastState = state
+				lastProgressAt = time.Now()
+				if phases.activating.IsZero() {
+					phases.activating = time.Now()
+				}
+				if phases.syncing.IsZero() && (state == config.StartingSync || state == config.Synchronizing) {
+					phases.syncing = time.Now()
+				}
 			}
 			switch status, _ := summarizeState(state); status {
 			case devStatusReady:
-				return nil
+				phases.ready = time.Now()
+				return phases.summary(), nil
 			case devStatusFailed:
-				return sessionFailedError(namespace, devName, "the development session failed to start")
+				return "", sessionFailedError(namespace, devName, "the development session failed to start")
+			}
+			if time.Since(lastProgressAt) >= heartbeatInterval {
+				elapsed := time.Since(phases.start).Round(time.Second)
+				if line := lastLogLine(logFilePath(namespace, devName)); line != "" {
+					oktetoLog.Information("Still starting (%s), last output: %s", elapsed, line)
+				} else {
+					oktetoLog.Information("Still starting (%s)", elapsed)
+				}
+				lastProgressAt = time.Now()
 			}
 			if time.Now().After(deadline) {
 				if s := loadSession(namespace, devName); s != nil {
 					terminateProcess(s.PID)
 				}
-				return sessionFailedError(namespace, devName, fmt.Sprintf("the development session wasn't ready after %s", timeout))
+				return "", sessionFailedError(namespace, devName, fmt.Sprintf("the development session wasn't ready after %s", timeout))
 			}
 		}
 	}
+}
+
+// ansiEscapes matches ANSI escape sequences and other control characters that shell
+// prompts and spinners write into the session log
+var ansiEscapes = regexp.MustCompile(`\x1b\[[0-9;?]*[A-Za-z]|\x1b[\]()][^\x07\x1b]*(\x07)?|[\x00-\x08\x0b-\x1f]`)
+
+// lastLogLine returns the last non-empty line of the session log, cleaned up and
+// truncated so it fits in a single heartbeat message
+func lastLogLine(path string) string {
+	tail, err := tailFile(path, 1)
+	if err != nil {
+		return ""
+	}
+	line := ansiEscapes.ReplaceAllString(tail, "")
+	line = strings.TrimSpace(line)
+	if len(line) > maxHeartbeatLineLength {
+		line = line[:maxHeartbeatLineLength] + "..."
+	}
+	return line
 }
 
 // waitForExistingSession waits for a session started by another 'okteto dev start' to be ready

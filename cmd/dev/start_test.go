@@ -14,9 +14,14 @@
 package dev
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestBuildUpArgs(t *testing.T) {
@@ -66,6 +71,69 @@ func TestBuildUpArgs(t *testing.T) {
 			assert.Equal(t, tt.expected, buildUpArgs("api", tt.flags, tt.command))
 		})
 	}
+}
+
+func TestStartPhasesSummary(t *testing.T) {
+	base := time.Date(2026, 8, 7, 13, 40, 0, 0, time.UTC)
+	tests := []struct {
+		name     string
+		phases   startPhases
+		expected string
+	}{
+		{
+			name: "all phases observed",
+			phases: startPhases{
+				start:      base,
+				activating: base.Add(35 * time.Second),
+				syncing:    base.Add(75 * time.Second),
+				ready:      base.Add(82 * time.Second),
+			},
+			expected: "1m22s (deploy 35s, container 40s, sync 7s)",
+		},
+		{
+			name: "sync phase not observed",
+			phases: startPhases{
+				start:      base,
+				activating: base.Add(5 * time.Second),
+				ready:      base.Add(20 * time.Second),
+			},
+			expected: "20s (deploy 5s, container 15s)",
+		},
+		{
+			name: "no phases observed",
+			phases: startPhases{
+				start: base,
+				ready: base.Add(3 * time.Second),
+			},
+			expected: "3s",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, tt.phases.summary())
+		})
+	}
+}
+
+func TestLastLogLine(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "log")
+
+	require.NoError(t, os.WriteFile(path, []byte("first\nExecuting command 'Deploy Rent'...\n"), 0600))
+	assert.Equal(t, "Executing command 'Deploy Rent'...", lastLogLine(path))
+
+	// ANSI escapes and control characters from shell prompts are stripped
+	require.NoError(t, os.WriteFile(path, []byte("\x1b[?2004h\x1b[36mrberrelleza:\x1b[32mapi \x1b[mapp>\n"), 0600))
+	assert.Equal(t, "rberrelleza:api app>", lastLogLine(path))
+
+	// long lines are truncated
+	require.NoError(t, os.WriteFile(path, []byte(strings.Repeat("a", 300)+"\n"), 0600))
+	line := lastLogLine(path)
+	assert.Len(t, line, maxHeartbeatLineLength+3)
+	assert.True(t, strings.HasSuffix(line, "..."))
+
+	// missing file is not an error
+	assert.Equal(t, "", lastLogLine(filepath.Join(dir, "missing")))
 }
 
 func TestPositionalArgs(t *testing.T) {
