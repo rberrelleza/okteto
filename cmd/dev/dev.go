@@ -29,6 +29,7 @@ import (
 	"github.com/okteto/okteto/pkg/config"
 	"github.com/okteto/okteto/pkg/discovery"
 	oktetoErrors "github.com/okteto/okteto/pkg/errors"
+	oktetoLog "github.com/okteto/okteto/pkg/log"
 	"github.com/okteto/okteto/pkg/model"
 	"github.com/okteto/okteto/pkg/okteto"
 	"github.com/okteto/okteto/pkg/validator"
@@ -161,4 +162,38 @@ func resolveDevEnvironment(ctx context.Context, fs afero.Fs, flags *commonFlags,
 // appLogPath returns the path to the 'okteto up' debug log of the dev environment
 func appLogPath(namespace, devName string) string {
 	return filepath.Join(config.GetAppHome(namespace, devName), "okteto.log")
+}
+
+// resolveSessionNamespace finds the namespace whose session the command should operate
+// on. Sessions are keyed by the namespace they were started in, which may differ from
+// the current context namespace (e.g. after 'okteto namespace use'), so when the current
+// namespace has no session the recorded sessions are the source of truth. An explicit
+// '--namespace' flag always wins and disables the search.
+func resolveSessionNamespace(env *devEnvironment, explicitNamespace string) (string, error) {
+	if explicitNamespace != "" {
+		return env.namespace, nil
+	}
+	if hasSessionFiles(env.namespace, env.name) {
+		return env.namespace, nil
+	}
+
+	sessions := findSessions(env.name)
+	switch len(sessions) {
+	case 0:
+		return env.namespace, nil
+	case 1:
+		if sessions[0].Namespace != env.namespace {
+			oktetoLog.Information("Using the development session for '%s' started in namespace '%s'", env.name, sessions[0].Namespace)
+		}
+		return sessions[0].Namespace, nil
+	default:
+		namespaces := make([]string, len(sessions))
+		for i, s := range sessions {
+			namespaces[i] = s.Namespace
+		}
+		return "", oktetoErrors.UserError{
+			E:    fmt.Errorf("there are development sessions for '%s' in multiple namespaces: %s", env.name, strings.Join(namespaces, ", ")),
+			Hint: fmt.Sprintf("Specify one with the '--namespace' flag, e.g. okteto dev stop %s -n %s", env.name, namespaces[0]),
+		}
+	}
 }

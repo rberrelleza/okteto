@@ -234,6 +234,41 @@ func summarizeState(state string) (devStatus, int) {
 	}
 }
 
+// findSessions returns the sessions recorded for the given dev container name across
+// all namespaces. Paths are probed directly (not through GetAppHome) so scanning
+// doesn't create directories as a side effect.
+func findSessions(devName string) []*session {
+	home := config.GetOktetoHome()
+	entries, err := os.ReadDir(home)
+	if err != nil {
+		return nil
+	}
+	var sessions []*session
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		bytes, err := os.ReadFile(filepath.Join(home, entry.Name(), devName, devSessionFilename))
+		if err != nil {
+			continue
+		}
+		var s session
+		if err := json.Unmarshal(bytes, &s); err != nil {
+			continue
+		}
+		if s.DevName == devName {
+			sessions = append(sessions, &s)
+		}
+	}
+	return sessions
+}
+
+// hasSessionFiles returns true if the dev environment has a session or a running
+// 'okteto up' recorded in the given namespace
+func hasSessionFiles(namespace, devName string) bool {
+	return loadSession(namespace, devName) != nil || readUpPID(namespace, devName) > 0
+}
+
 // cleanupSessionFiles removes the session metadata and, when no live process owns them,
 // the leftover 'okteto up' pid and state files
 func cleanupSessionFiles(namespace, devName string) {

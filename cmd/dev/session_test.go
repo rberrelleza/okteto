@@ -171,6 +171,69 @@ func TestIsProcessAliveDeadPID(t *testing.T) {
 	assert.False(t, isProcessAlive(-1, ""))
 }
 
+func TestFindSessions(t *testing.T) {
+	setupOktetoHome(t)
+	require.NoError(t, saveSession(&session{PID: deadPID, DevName: "api", Namespace: "ns1", StartedAt: time.Now()}))
+	require.NoError(t, saveSession(&session{PID: deadPID, DevName: "api", Namespace: "ns2", StartedAt: time.Now()}))
+	require.NoError(t, saveSession(&session{PID: deadPID, DevName: "other", Namespace: "ns2", StartedAt: time.Now()}))
+
+	sessions := findSessions("api")
+	require.Len(t, sessions, 2)
+	namespaces := []string{sessions[0].Namespace, sessions[1].Namespace}
+	assert.ElementsMatch(t, []string{"ns1", "ns2"}, namespaces)
+
+	assert.Len(t, findSessions("other"), 1)
+	assert.Empty(t, findSessions("missing"))
+}
+
+func TestResolveSessionNamespace(t *testing.T) {
+	t.Run("explicit namespace flag wins", func(t *testing.T) {
+		setupOktetoHome(t)
+		require.NoError(t, saveSession(&session{PID: deadPID, DevName: "api", Namespace: "other", StartedAt: time.Now()}))
+		env := &devEnvironment{name: "api", namespace: "current"}
+		ns, err := resolveSessionNamespace(env, "current")
+		require.NoError(t, err)
+		assert.Equal(t, "current", ns)
+	})
+
+	t.Run("session in current namespace wins over other namespaces", func(t *testing.T) {
+		setupOktetoHome(t)
+		require.NoError(t, saveSession(&session{PID: deadPID, DevName: "api", Namespace: "current", StartedAt: time.Now()}))
+		require.NoError(t, saveSession(&session{PID: deadPID, DevName: "api", Namespace: "other", StartedAt: time.Now()}))
+		env := &devEnvironment{name: "api", namespace: "current"}
+		ns, err := resolveSessionNamespace(env, "")
+		require.NoError(t, err)
+		assert.Equal(t, "current", ns)
+	})
+
+	t.Run("single session in another namespace is found", func(t *testing.T) {
+		setupOktetoHome(t)
+		require.NoError(t, saveSession(&session{PID: deadPID, DevName: "api", Namespace: "other", StartedAt: time.Now()}))
+		env := &devEnvironment{name: "api", namespace: "current"}
+		ns, err := resolveSessionNamespace(env, "")
+		require.NoError(t, err)
+		assert.Equal(t, "other", ns)
+	})
+
+	t.Run("no sessions anywhere falls back to current namespace", func(t *testing.T) {
+		setupOktetoHome(t)
+		env := &devEnvironment{name: "api", namespace: "current"}
+		ns, err := resolveSessionNamespace(env, "")
+		require.NoError(t, err)
+		assert.Equal(t, "current", ns)
+	})
+
+	t.Run("sessions in multiple namespaces require the namespace flag", func(t *testing.T) {
+		setupOktetoHome(t)
+		require.NoError(t, saveSession(&session{PID: deadPID, DevName: "api", Namespace: "ns1", StartedAt: time.Now()}))
+		require.NoError(t, saveSession(&session{PID: deadPID, DevName: "api", Namespace: "ns2", StartedAt: time.Now()}))
+		env := &devEnvironment{name: "api", namespace: "current"}
+		_, err := resolveSessionNamespace(env, "")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "multiple namespaces")
+	})
+}
+
 func TestTailFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "log")

@@ -68,6 +68,10 @@ okteto dev logs api --watch`,
 			if err != nil {
 				return err
 			}
+			env.namespace, err = resolveSessionNamespace(env, flags.namespace)
+			if err != nil {
+				return err
+			}
 
 			logPath := logFilePath(env.namespace, env.name)
 			if _, err := os.Stat(logPath); err != nil {

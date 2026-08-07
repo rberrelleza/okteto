@@ -68,6 +68,10 @@ okteto dev status api --wait`,
 			if err != nil {
 				return err
 			}
+			env.namespace, err = resolveSessionNamespace(env, flags.namespace)
+			if err != nil {
+				return err
+			}
 
 			info := getStatus(env.namespace, env.name)
 			if flags.wait {

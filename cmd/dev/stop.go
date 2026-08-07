@@ -63,6 +63,10 @@ okteto dev stop api`,
 			if err != nil {
 				return err
 			}
+			env.namespace, err = resolveSessionNamespace(env, flags.namespace)
+			if err != nil {
+				return err
+			}
 			return runStop(env, flags.timeout)
 		},
 	}
