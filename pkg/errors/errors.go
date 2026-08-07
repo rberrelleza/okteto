@@ -44,6 +44,26 @@ func (u CommandError) Error() string {
 	return fmt.Sprintf("%s: %s", u.E.Error(), strings.ToLower(u.Reason.Error()))
 }
 
+// ExitError carries a specific exit code for the CLI process. Commands return it
+// when the exit code is part of their contract (e.g. 'okteto dev status') so that
+// automated callers can branch on the code instead of parsing output.
+type ExitError struct {
+	Err  error
+	Code int
+}
+
+// Error returns the error message
+func (e ExitError) Error() string {
+	if e.Err != nil {
+		return e.Err.Error()
+	}
+	return fmt.Sprintf("exit status %d", e.Code)
+}
+
+func (e ExitError) Unwrap() error {
+	return e.Err
+}
+
 // NotLoggedError is raised when the user is not logged in okteto
 type NotLoggedError struct {
 	Context string

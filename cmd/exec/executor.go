@@ -19,6 +19,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/moby/term"
 	"github.com/okteto/okteto/cmd/up"
 	oktetoErrors "github.com/okteto/okteto/pkg/errors"
 	"github.com/okteto/okteto/pkg/k8s/exec"
@@ -40,6 +41,14 @@ var (
 	// defaultStderr is the default stderr
 	defaultStderr = os.Stderr
 )
+
+// hasTerminalStdin returns true when stdin is a terminal. When it is not (e.g. the
+// command is driven by a script or an agent), the command is executed without
+// requesting a TTY so 'okteto exec' works detached from a terminal.
+func hasTerminalStdin() bool {
+	_, isTerm := term.GetFdInfo(defaultStdin)
+	return isTerm
+}
 
 type executor interface {
 	execute(ctx context.Context, cmd []string) error
@@ -126,7 +135,7 @@ func (s *sshExecutor) execute(ctx context.Context, cmd []string) error {
 		ctx,
 		s.dev.Interface,
 		p,
-		true,
+		hasTerminalStdin(),
 		defaultStdin,
 		defaultStdout,
 		defaultStderr,
@@ -149,7 +158,7 @@ func (k *k8sExecutor) execute(ctx context.Context, cmd []string) error {
 		k.namespace,
 		k.podName,
 		k.container,
-		true,
+		hasTerminalStdin(),
 		defaultStdin,
 		defaultStdout,
 		defaultStderr,

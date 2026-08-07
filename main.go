@@ -30,6 +30,7 @@ import (
 	contextCMD "github.com/okteto/okteto/cmd/context"
 	"github.com/okteto/okteto/cmd/deploy"
 	"github.com/okteto/okteto/cmd/destroy"
+	devCMD "github.com/okteto/okteto/cmd/dev"
 	"github.com/okteto/okteto/cmd/exec"
 	"github.com/okteto/okteto/cmd/kubetoken"
 	"github.com/okteto/okteto/cmd/logs"
@@ -162,6 +163,7 @@ func main() {
 
 	root.AddCommand(namespace.Namespace(ctx, k8sLogger, ioController, at))
 	root.AddCommand(up.Up(at, insights, ioController, k8sLogger, fs))
+	root.AddCommand(devCMD.Dev(fs))
 	root.AddCommand(cmd.Down(at, k8sLogger, fs))
 	root.AddCommand(cmd.Status(fs))
 	root.AddCommand(cmd.Doctor(k8sLogger, fs))
@@ -182,6 +184,22 @@ func main() {
 
 	err = root.Execute()
 	at.Close()
+
+	var exitErr oktetoErrors.ExitError
+	if errors.As(err, &exitErr) {
+		// commands with an exit code contract (e.g. 'okteto dev status') report their
+		// state themselves; only surface the error when there is a message to show
+		if exitErr.Err != nil {
+			oktetoLog.Fail("%s", exitErr.Error())
+			var uErr oktetoErrors.UserError
+			if errors.As(exitErr.Err, &uErr) {
+				if len(uErr.Hint) > 0 {
+					oktetoLog.Hint("    %s", uErr.Hint)
+				}
+			}
+		}
+		os.Exit(exitErr.Code)
+	}
 
 	if err != nil {
 		message := err.Error()
