@@ -70,12 +70,16 @@ okteto dev status api
 # Stream the app output
 okteto dev logs api
 
-# Tear the session down
+# Restart the session (e.g. to re-run the app command)
+okteto dev restart api
+
+# Tear the session down and deactivate the Development Container
 okteto dev stop api`,
 	}
 	cmd.AddCommand(Start(fs))
 	cmd.AddCommand(Status(fs))
 	cmd.AddCommand(Logs(fs))
+	cmd.AddCommand(Restart(fs))
 	cmd.AddCommand(Stop(fs))
 	return cmd
 }

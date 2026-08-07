@@ -131,6 +131,13 @@ func runStart(env *devEnvironment, flags *startFlags, command []string, binaryNa
 		oktetoLog.Warning("The dev command for '%s' is an interactive shell, so the session will idle after start.\n    Pass the command to run your app with: okteto dev start %s -- <command>", env.name, env.name)
 	}
 
+	return spawnSession(env, buildUpArgs(env.name, flags, command), "", flags.timeout)
+}
+
+// spawnSession starts a detached 'okteto up' with the given arguments, records the
+// session metadata and waits until the session is ready. When dir is set, the child
+// runs from that directory instead of the current one.
+func spawnSession(env *devEnvironment, upArgs []string, dir string, timeout time.Duration) error {
 	binary, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("failed to resolve the okteto binary path: %w", err)
@@ -157,11 +164,11 @@ func runStart(env *devEnvironment, flags *startFlags, command []string, binaryNa
 		}
 	}()
 
-	upArgs := buildUpArgs(env.name, flags, command)
 	child := exec.Command(binary, upArgs...)
 	child.Stdin = devNull
 	child.Stdout = logFile
 	child.Stderr = logFile
+	child.Dir = dir
 	child.Env = append(os.Environ(), fmt.Sprintf("%s=dev-start", constants.OktetoOriginEnvVar))
 	configureDetachedProcess(child)
 
@@ -169,6 +176,12 @@ func runStart(env *devEnvironment, flags *startFlags, command []string, binaryNa
 		return fmt.Errorf("failed to start the development session: %w", err)
 	}
 
+	sessionDir := dir
+	if sessionDir == "" {
+		if wd, err := os.Getwd(); err == nil {
+			sessionDir = wd
+		}
+	}
 	s := &session{
 		PID:       child.Process.Pid,
 		Binary:    binary,
@@ -176,6 +189,7 @@ func runStart(env *devEnvironment, flags *startFlags, command []string, binaryNa
 		Namespace: env.namespace,
 		Context:   okteto.GetContext().Name,
 		LogFile:   logPath,
+		Dir:       sessionDir,
 		StartedAt: time.Now(),
 		Args:      upArgs,
 	}
@@ -191,7 +205,7 @@ func runStart(env *devEnvironment, flags *startFlags, command []string, binaryNa
 
 	oktetoLog.Information("Starting development session for '%s' in namespace '%s'...", env.name, env.namespace)
 
-	timing, err := waitForReady(env.namespace, env.name, exited, flags.timeout)
+	timing, err := waitForReady(env.namespace, env.name, exited, timeout)
 	if err != nil {
 		cleanupSessionFiles(env.namespace, env.name)
 		return err

@@ -63,6 +63,7 @@ type session struct {
 	Namespace string    `json:"namespace"`
 	Context   string    `json:"context"`
 	LogFile   string    `json:"logFile"`
+	Dir       string    `json:"dir,omitempty"`
 	Args      []string  `json:"args"`
 	PID       int       `json:"pid"`
 }
